@@ -1,0 +1,1104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ProVideo - 智能视频质量分析与提取工具</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 使用单文件版本避免 Worker CORS 问题 -->
+    <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .gradient-bg { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        .glass-panel { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); }
+        .timeline-track { background: linear-gradient(90deg, #e0e0e0 0%, #f0f0f0 100%); }
+        .quality-bar { transition: all 0.3s ease; }
+        .segment-active { box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.5); }
+        .processing-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .5; }
+        }
+        .video-container { position: relative; overflow: hidden; }
+        .scan-line {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 2px;
+            height: 100%;
+            background: linear-gradient(to bottom, transparent, #6366f1, transparent);
+            animation: scan 3s linear infinite;
+            display: none;
+        }
+        @keyframes scan {
+            0% { left: 0%; }
+            100% { left: 100%; }
+        }
+        .metric-card:hover { transform: translateY(-2px); transition: transform 0.2s; }
+        .progress-bar-striped {
+            background-image: linear-gradient(45deg,rgba(255,255,255,.15) 25%,transparent 25%,transparent 50%,rgba(255,255,255,.15) 50%,rgba(255,255,255,.15) 75%,transparent 75%,transparent);
+            background-size: 1rem 1rem;
+            animation: progress-bar-stripes 1s linear infinite;
+        }
+        @keyframes progress-bar-stripes {
+            0% { background-position: 1rem 0; }
+            100% { background-position: 0 0; }
+        }
+        .method-badge {
+            animation: fadeIn 0.3s ease-in;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+<base target="_blank">
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+    <!-- Header -->
+    <header class="gradient-bg text-white shadow-lg sticky top-0 z-50">
+        <div class="container mx-auto px-6 py-4 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="bg-white/20 p-2 rounded-lg">
+                    <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                              d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="text-2xl font-bold tracking-tight">ProVideo Analyzer</h1>
+                    <p class="text-sm text-indigo-100">智能视频质量分析与片段提取</p>
+                </div>
+            </div>
+            <div class="flex items-center space-x-4">
+                <span class="text-sm bg-white/20 px-3 py-1 rounded-full" id="status-badge">就绪</span>
+                <button onclick="resetApp()" class="bg-white/20 hover:bg-white/30 px-4 py-2 rounded-lg transition text-sm font-medium">
+                    重置
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="container mx-auto px-6 py-8 space-y-6">
+
+        <!-- Upload Section -->
+        <section id="upload-section" class="glass-panel rounded-2xl shadow-xl p-8 border border-gray-200">
+            <div class="text-center space-y-4">
+                <div class="w-20 h-20 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <svg class="w-10 h-10 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                              d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                    </svg>
+                </div>
+                <h2 class="text-2xl font-bold text-gray-800">导入视频文件</h2>
+                <p class="text-gray-600 max-w-md mx-auto">支持 MP4, MOV, AVI, MKV 等常见格式。文件将在本地浏览器中处理，保护您的隐私。</p>
+                
+                <div class="mt-6">
+                    <input type="file" id="video-input" accept="video/*" class="hidden" onchange="handleVideoUpload(event)">
+                    <label for="video-input" 
+                           class="inline-flex items-center px-8 py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl cursor-pointer transition shadow-lg hover:shadow-xl transform hover:-translate-y-0.5">
+                        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                        </svg>
+                        选择视频文件
+                    </label>
+                </div>
+                
+                <div id="upload-info" class="hidden mt-4 p-4 bg-blue-50 rounded-lg text-left max-w-2xl mx-auto">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="font-semibold text-blue-900" id="file-name">video.mp4</span>
+                        <span class="text-sm text-blue-700" id="file-size">0 MB</span>
+                    </div>
+                    <div class="w-full bg-blue-200 rounded-full h-2">
+                        <div class="bg-blue-600 h-2 rounded-full" style="width: 100%"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Video Player & Analysis Section -->
+        <section id="analysis-section" class="hidden space-y-6">
+            
+            <!-- Video Player -->
+            <div class="glass-panel rounded-2xl shadow-xl overflow-hidden border border-gray-200">
+                <div class="video-container bg-black relative aspect-video">
+                    <video id="main-video" class="w-full h-full" controls crossorigin="anonymous"></video>
+                    <div class="scan-line" id="scan-line"></div>
+                    <canvas id="export-canvas" class="hidden"></canvas>
+                    
+                    <!-- Analysis Overlay -->
+                    <div id="analysis-overlay" class="absolute inset-0 bg-black/50 hidden flex items-center justify-center">
+                        <div class="text-center text-white">
+                            <div class="w-16 h-16 border-4 border-white/30 border-t-white rounded-full animate-spin mx-auto mb-4"></div>
+                            <p class="text-lg font-semibold">正在分析视频质量...</p>
+                            <p class="text-sm text-gray-300 mt-2" id="analysis-progress">0%</p>
+                        </div>
+                    </div>
+
+                    <!-- Recording Overlay -->
+                    <div id="recording-overlay" class="absolute inset-0 bg-black/70 hidden flex items-center justify-center">
+                        <div class="text-center text-white">
+                            <div class="w-20 h-20 rounded-full border-4 border-red-500 flex items-center justify-center mb-4 animate-pulse">
+                                <div class="w-12 h-12 bg-red-500 rounded-full"></div>
+                            </div>
+                            <p class="text-xl font-bold mb-2">正在录制片段...</p>
+                            <p class="text-lg font-mono" id="recording-time">00:00</p>
+                            <p class="text-sm text-gray-300 mt-2" id="recording-status">准备中...</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Timeline -->
+                <div class="p-6 bg-white border-t border-gray-200">
+                    <div class="flex items-center justify-between mb-3">
+                        <span class="text-sm font-medium text-gray-700">时间轴</span>
+                        <div class="flex items-center space-x-4 text-sm">
+                            <div class="flex items-center">
+                                <div class="w-3 h-3 bg-green-500 rounded-full mr-2"></div>
+                                <span class="text-gray-600">优质片段</span>
+                            </div>
+                            <div class="flex items-center">
+                                <div class="w-3 h-3 bg-red-400 rounded-full mr-2"></div>
+                                <span class="text-gray-600">抖动/模糊</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="timeline-track h-12 rounded-lg relative overflow-hidden cursor-pointer" id="timeline">
+                        <!-- Quality segments will be rendered here -->
+                    </div>
+                    <div class="flex justify-between mt-2 text-xs text-gray-500">
+                        <span id="time-start">00:00</span>
+                        <span id="time-current" class="font-semibold text-indigo-600">00:00</span>
+                        <span id="time-end">00:00</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Analysis Controls -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                
+                <!-- Parameters -->
+                <div class="glass-panel rounded-2xl shadow-lg p-6 border border-gray-200">
+                    <h3 class="text-lg font-bold text-gray-800 mb-4 flex items-center">
+                        <svg class="w-5 h-5 mr-2 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                                  d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/>
+                        </svg>
+                        分析参数
+                    </h3>
+                    
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">稳定性阈值 (抖动检测)</label>
+                            <input type="range" id="stability-threshold" min="0" max="100" value="70" 
+                                   class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600">
+                            <div class="flex justify-between text-xs text-gray-500 mt-1">
+                                <span>宽松 (允许抖动)</span>
+                                <span id="stability-value" class="font-semibold text-indigo-600">70%</span>
+                                <span>严格 (拒绝抖动)</span>
+                            </div>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">清晰度阈值 (模糊检测)</label>
+                            <input type="range" id="clarity-threshold" min="0" max="100" value="65" 
+                                   class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600">
+                            <div class="flex justify-between text-xs text-gray-500 mt-1">
+                                <span>宽松 (允许模糊)</span>
+                                <span id="clarity-value" class="font-semibold text-indigo-600">65%</span>
+                                <span>严格 (拒绝模糊)</span>
+                            </div>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">最小片段时长</label>
+                            <select id="min-duration" class="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
+                                <option value="1">1 秒</option>
+                                <option value="2" selected>2 秒</option>
+                                <option value="3">3 秒</option>
+                                <option value="5">5 秒</option>
+                            </select>
+                        </div>
+
+                        <button onclick="startAnalysis()" 
+                                class="w-full py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-semibold rounded-lg hover:shadow-lg transition transform hover:-translate-y-0.5">
+                            开始智能分析
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Real-time Metrics -->
+                <div class="glass-panel rounded-2xl shadow-lg p-6 border border-gray-200">
+                    <h3 class="text-lg font-bold text-gray-800 mb-4 flex items-center">
+                        <svg class="w-5 h-5 mr-2 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                                  d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                        </svg>
+                        实时质量指标
+                    </h3>
+                    
+                    <div class="space-y-4" id="metrics-container">
+                        <div class="metric-card p-4 bg-gray-50 rounded-xl border border-gray-200">
+                            <div class="flex justify-between items-center mb-2">
+                                <span class="text-sm text-gray-600">画面稳定性</span>
+                                <span class="text-lg font-bold text-gray-800" id="metric-stability">--</span>
+                            </div>
+                            <div class="w-full bg-gray-200 rounded-full h-2">
+                                <div id="bar-stability" class="bg-blue-500 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+                            </div>
+                        </div>
+
+                        <div class="metric-card p-4 bg-gray-50 rounded-xl border border-gray-200">
+                            <div class="flex justify-between items-center mb-2">
+                                <span class="text-sm text-gray-600">清晰度评分</span>
+                                <span class="text-lg font-bold text-gray-800" id="metric-clarity">--</span>
+                            </div>
+                            <div class="w-full bg-gray-200 rounded-full h-2">
+                                <div id="bar-clarity" class="bg-green-500 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+                            </div>
+                        </div>
+
+                        <div class="metric-card p-4 bg-gray-50 rounded-xl border border-gray-200">
+                            <div class="flex justify-between items-center mb-2">
+                                <span class="text-sm text-gray-600">运动强度</span>
+                                <span class="text-lg font-bold text-gray-800" id="metric-motion">--</span>
+                            </div>
+                            <div class="w-full bg-gray-200 rounded-full h-2">
+                                <div id="bar-motion" class="bg-purple-500 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Detected Segments -->
+                <div class="glass-panel rounded-2xl shadow-lg p-6 border border-gray-200">
+                    <h3 class="text-lg font-bold text-gray-800 mb-4 flex items-center justify-between">
+                        <span class="flex items-center">
+                            <svg class="w-5 h-5 mr-2 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                                      d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z"/>
+                            </svg>
+                            检测到的片段
+                        </span>
+                        <span class="text-sm bg-indigo-100 text-indigo-800 px-2 py-1 rounded-full" id="segment-count">0</span>
+                    </h3>
+                    
+                    <div id="segments-list" class="space-y-2 max-h-64 overflow-y-auto pr-2">
+                        <div class="text-center text-gray-500 py-8 text-sm">
+                            等待分析完成...
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Export Section -->
+            <div class="glass-panel rounded-2xl shadow-xl p-6 border border-gray-200" id="export-section" style="display: none;">
+                <div class="flex items-center justify-between mb-6">
+                    <h3 class="text-xl font-bold text-gray-800 flex items-center">
+                        <svg class="w-6 h-6 mr-2 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                                  d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                        </svg>
+                        导出优质素材
+                    </h3>
+                    <div class="flex items-center space-x-3">
+                        <span id="export-method-badge" class="hidden method-badge px-3 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-800">
+                            方法: <span id="method-name">FFmpeg</span>
+                        </span>
+                        <button onclick="exportSegments('separate')" id="btn-separate"
+                                class="px-6 py-2 bg-white border-2 border-indigo-600 text-indigo-600 font-semibold rounded-lg hover:bg-indigo-50 transition disabled:opacity-50 disabled:cursor-not-allowed">
+                            单独保存
+                        </button>
+                        <button onclick="exportSegments('merge')" id="btn-merge"
+                                class="px-6 py-2 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transition shadow-lg disabled:opacity-50 disabled:cursor-not-allowed">
+                            合并导出
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Export Progress -->
+                <div id="export-progress" class="hidden mb-4">
+                    <div class="flex justify-between text-sm mb-2">
+                        <span class="font-medium text-gray-700" id="export-status">正在初始化...</span>
+                        <span class="text-indigo-600 font-semibold" id="export-percent">0%</span>
+                    </div>
+                    <div class="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+                        <div id="export-bar" class="bg-indigo-600 h-full rounded-full progress-bar-striped transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-2" id="export-detail">准备中...</p>
+                </div>
+
+                <!-- Export Results -->
+                <div id="export-results" class="hidden space-y-3">
+                    <h4 class="font-semibold text-gray-800 mb-2">导出完成：</h4>
+                    <div id="download-list" class="space-y-2">
+                        <!-- Download links will be added here -->
+                    </div>
+                </div>
+                
+                <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-start mt-4">
+                    <svg class="w-5 h-5 text-blue-600 mr-3 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                              d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    <div class="text-sm text-blue-800">
+                        <p class="font-semibold mb-1">导出说明</p>
+                        <p><strong>自动降级方案：</strong>如果 FFmpeg 加载失败，将自动切换到浏览器原生录制模式。</p>
+                        <p class="mt-1">• 单独保存：每个片段导出为独立视频</p>
+                        <p>• 合并导出：所有片段合并为一个视频</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <script>
+        // Global variables
+        let videoFile = null;
+        let videoElement = null;
+        let canvas = null;
+        let ctx = null;
+        let analysisData = [];
+        let goodSegments = [];
+        let isAnalyzing = false;
+        let currentVideoUrl = null;
+        let ffmpeg = null;
+        let isFFmpegLoading = false;
+        let useFallbackMode = false; // 是否使用降级方案
+
+        // Initialize canvas for frame analysis
+        function initCanvas() {
+            canvas = document.createElement('canvas');
+            canvas.width = 320;
+            canvas.height = 180;
+            ctx = canvas.getContext('2d');
+        }
+
+        // Initialize FFmpeg with CORS fix
+        async function initFFmpeg() {
+            if (ffmpeg) return ffmpeg;
+            if (isFFmpegLoading) return null;
+            
+            isFFmpegLoading = true;
+            updateStatus('加载 FFmpeg...');
+            
+            try {
+                // 检查 FFmpeg 是否加载
+                if (typeof FFmpegWASM === 'undefined' || !FFmpegWASM.FFmpeg) {
+                    throw new Error('FFmpeg 库未加载');
+                }
+                
+                const { FFmpeg } = FFmpegWASM;
+                const { fetchFile } = FFmpegUtil;
+                
+                ffmpeg = new FFmpeg();
+                
+                // 使用单线程模式避免 Worker CORS 问题
+                ffmpeg.on('log', ({ message }) => {
+                    console.log('FFmpeg:', message);
+                });
+                
+                ffmpeg.on('progress', ({ progress, time }) => {
+                    const percent = Math.round(progress * 100);
+                    document.getElementById('export-percent').textContent = percent + '%';
+                    document.getElementById('export-bar').style.width = percent + '%';
+                    document.getElementById('export-detail').textContent = `处理中... ${time}ms`;
+                });
+                
+                // 加载核心，使用单文件版本
+                await ffmpeg.load({
+                    coreURL: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
+                    // 不使用 Worker，避免 CORS 问题
+                    mainName: 'main'
+                });
+                
+                useFallbackMode = false;
+                updateStatus('FFmpeg 就绪');
+                return ffmpeg;
+                
+            } catch (error) {
+                console.warn('FFmpeg 加载失败，切换到降级模式:', error);
+                useFallbackMode = true;
+                updateStatus('使用浏览器录制模式');
+                return null;
+            } finally {
+                isFFmpegLoading = false;
+            }
+        }
+
+        // Handle video upload
+        function handleVideoUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            videoFile = file;
+            
+            // Update UI
+            document.getElementById('upload-info').classList.remove('hidden');
+            document.getElementById('file-name').textContent = file.name;
+            document.getElementById('file-size').textContent = (file.size / (1024 * 1024)).toFixed(2) + ' MB';
+            
+            // Load video
+            const url = URL.createObjectURL(file);
+            currentVideoUrl = url;
+            videoElement = document.getElementById('main-video');
+            videoElement.src = url;
+            
+            videoElement.onloadedmetadata = () => {
+                document.getElementById('upload-section').classList.add('hidden');
+                document.getElementById('analysis-section').classList.remove('hidden');
+                
+                // Update time display
+                const duration = videoElement.duration;
+                document.getElementById('time-end').textContent = formatTime(duration);
+                
+                initCanvas();
+                updateStatus('视频已加载，准备分析');
+                
+                // Try to load FFmpeg in background
+                initFFmpeg().then(() => {
+                    const badge = document.getElementById('export-method-badge');
+                    const methodName = document.getElementById('method-name');
+                    badge.classList.remove('hidden');
+                    if (useFallbackMode) {
+                        methodName.textContent = '浏览器录制';
+                        badge.className = 'method-badge px-3 py-1 rounded-full text-xs font-semibold bg-yellow-100 text-yellow-800';
+                    } else {
+                        methodName.textContent = 'FFmpeg';
+                        badge.className = 'method-badge px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800';
+                    }
+                });
+            };
+        }
+
+        // Format time helper
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            const ms = Math.floor((seconds % 1) * 100);
+            return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
+        }
+
+        // Update status
+        function updateStatus(status) {
+            document.getElementById('status-badge').textContent = status;
+        }
+
+        // Start analysis
+        async function startAnalysis() {
+            if (!videoElement || isAnalyzing) return;
+            
+            isAnalyzing = true;
+            updateStatus('分析中...');
+            
+            const stabilityThreshold = document.getElementById('stability-threshold').value / 100;
+            const clarityThreshold = document.getElementById('clarity-threshold').value / 100;
+            const minDuration = parseInt(document.getElementById('min-duration').value);
+            
+            // Show overlay
+            document.getElementById('analysis-overlay').classList.remove('hidden');
+            document.getElementById('scan-line').style.display = 'block';
+            
+            analysisData = [];
+            const duration = videoElement.duration;
+            const sampleRate = 0.5; // Check every 0.5 seconds
+            
+            // Reset previous frame data
+            prevFrameData = null;
+            
+            // Analyze video frames
+            for (let time = 0; time < duration; time += sampleRate) {
+                videoElement.currentTime = time;
+                await new Promise(resolve => {
+                    videoElement.onseeked = () => {
+                        setTimeout(resolve, 50);
+                    };
+                });
+                
+                // Capture frame
+                ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                
+                // Calculate metrics
+                // 保存前一帧用于运动检测（calculateStability 会更新 prevFrameData）
+                const prevFrameForMotion = prevFrameData;
+                
+                const stability = calculateStability(imageData, time);
+                const clarity = calculateClarity(imageData);
+                const motion = calculateMotion(imageData, prevFrameForMotion);
+                
+                const isGood = stability >= stabilityThreshold && clarity >= clarityThreshold;
+                
+                analysisData.push({
+                    time: time,
+                    stability: stability,
+                    clarity: clarity,
+                    motion: motion,
+                    isGood: isGood
+                });
+                
+                // Update progress
+                const progress = Math.round((time / duration) * 100);
+                document.getElementById('analysis-progress').textContent = progress + '%';
+                
+                // Update real-time metrics for current frame
+                updateMetrics(stability, clarity, motion);
+            }
+            
+            // Find continuous good segments
+            findGoodSegments(minDuration);
+            
+            // Update UI
+            document.getElementById('analysis-overlay').classList.add('hidden');
+            document.getElementById('scan-line').style.display = 'none';
+            document.getElementById('export-section').style.display = 'block';
+            
+            renderTimeline();
+            renderSegmentsList();
+            
+            isAnalyzing = false;
+            updateStatus('分析完成');
+        }
+
+        // Calculate stability
+        let prevFrameData = null;
+        function calculateStability(currentImageData, time) {
+            if (!prevFrameData || time === 0) {
+                prevFrameData = currentImageData;
+                return 1.0;
+            }
+            
+            let diff = 0;
+            const data = currentImageData.data;
+            const prevData = prevFrameData.data;
+            
+            for (let i = 0; i < data.length; i += 16) {
+                const rDiff = Math.abs(data[i] - prevData[i]);
+                const gDiff = Math.abs(data[i + 1] - prevData[i + 1]);
+                const bDiff = Math.abs(data[i + 2] - prevData[i + 2]);
+                diff += (rDiff + gDiff + bDiff) / 3;
+            }
+            
+            const stability = Math.max(0, 1 - (diff / (data.length / 16 * 255)));
+            prevFrameData = currentImageData;
+            
+            return stability;
+        }
+
+        // Calculate clarity
+        function calculateClarity(imageData) {
+            const width = canvas.width;
+            const height = canvas.height;
+            const data = imageData.data;
+            
+            let sum = 0;
+            let count = 0;
+            
+            for (let y = 1; y < height - 1; y += 2) {
+                for (let x = 1; x < width - 1; x += 2) {
+                    const idx = (y * width + x) * 4;
+                    const gx = Math.abs(data[idx] - data[idx - 4]) + Math.abs(data[idx] - data[idx + 4]);
+                    const gy = Math.abs(data[idx] - data[idx - width * 4]) + Math.abs(data[idx] - data[idx + width * 4]);
+                    sum += (gx + gy) / 2;
+                    count++;
+                }
+            }
+            
+            return Math.min(1, sum / (count * 50));
+        }
+
+        // Calculate motion
+        function calculateMotion(currentImageData, previousImageData) {
+            if (!previousImageData) return 0;
+            let motion = 0;
+            const data = currentImageData.data;
+            const prev = previousImageData.data;
+            
+            for (let i = 0; i < data.length; i += 32) {
+                motion += Math.abs(data[i] - prev[i]);
+            }
+            
+            return Math.min(1, motion / (data.length / 32 * 255));
+        }
+
+        // Update metrics
+        function updateMetrics(stability, clarity, motion) {
+            document.getElementById('metric-stability').textContent = (stability * 100).toFixed(1) + '%';
+            document.getElementById('bar-stability').style.width = (stability * 100) + '%';
+            document.getElementById('metric-clarity').textContent = (clarity * 100).toFixed(1) + '%';
+            document.getElementById('bar-clarity').style.width = (clarity * 100) + '%';
+            document.getElementById('metric-motion').textContent = (motion * 100).toFixed(1) + '%';
+            document.getElementById('bar-motion').style.width = (motion * 100) + '%';
+        }
+
+        // Find segments
+        function findGoodSegments(minDuration) {
+            goodSegments = [];
+            let currentSegment = null;
+            
+            for (let i = 0; i < analysisData.length; i++) {
+                const point = analysisData[i];
+                
+                if (point.isGood) {
+                    if (!currentSegment) {
+                        currentSegment = {
+                            start: point.time,
+                            end: point.time,
+                            quality: point.stability * point.clarity
+                        };
+                    } else {
+                        currentSegment.end = point.time;
+                        currentSegment.quality += point.stability * point.clarity;
+                    }
+                } else {
+                    if (currentSegment) {
+                        const duration = currentSegment.end - currentSegment.start;
+                        if (duration >= minDuration) {
+                            currentSegment.quality = currentSegment.quality / (duration * 2);
+                            goodSegments.push(currentSegment);
+                        }
+                        currentSegment = null;
+                    }
+                }
+            }
+            
+            if (currentSegment) {
+                const duration = currentSegment.end - currentSegment.start;
+                if (duration >= minDuration) {
+                    currentSegment.quality = currentSegment.quality / (duration * 2);
+                    goodSegments.push(currentSegment);
+                }
+            }
+            
+            document.getElementById('segment-count').textContent = goodSegments.length;
+        }
+
+        // Render timeline
+        function renderTimeline() {
+            const timeline = document.getElementById('timeline');
+            timeline.innerHTML = '';
+            const duration = videoElement.duration;
+            
+            analysisData.forEach((point) => {
+                const segment = document.createElement('div');
+                segment.className = 'absolute h-full quality-bar';
+                segment.style.left = (point.time / duration * 100) + '%';
+                segment.style.width = (0.5 / duration * 100 + 0.5) + '%';
+                
+                if (point.isGood) {
+                    segment.classList.add('bg-green-500');
+                } else {
+                    const opacity = 0.3 + (1 - point.stability) * 0.7;
+                    segment.style.backgroundColor = `rgba(239, 68, 68, ${opacity})`;
+                }
+                
+                segment.title = `时间: ${formatTime(point.time)}\n稳定性: ${(point.stability * 100).toFixed(1)}%\n清晰度: ${(point.clarity * 100).toFixed(1)}%`;
+                timeline.appendChild(segment);
+            });
+            
+            timeline.onclick = (e) => {
+                const rect = timeline.getBoundingClientRect();
+                const percent = (e.clientX - rect.left) / rect.width;
+                videoElement.currentTime = percent * duration;
+            };
+        }
+
+        // Render segments list
+        function renderSegmentsList() {
+            const container = document.getElementById('segments-list');
+            container.innerHTML = '';
+            
+            if (goodSegments.length === 0) {
+                container.innerHTML = '<div class="text-center text-gray-500 py-8">未检测到符合条件的片段，请调整阈值后重试</div>';
+                return;
+            }
+            
+            goodSegments.forEach((segment, index) => {
+                const div = document.createElement('div');
+                div.className = 'flex items-center justify-between p-3 bg-white border border-gray-200 rounded-lg hover:shadow-md transition cursor-pointer';
+                div.onclick = () => {
+                    videoElement.currentTime = segment.start;
+                    videoElement.play();
+                };
+                
+                const qualityScore = Math.round(segment.quality * 100);
+                const qualityColor = qualityScore > 80 ? 'text-green-600' : qualityScore > 60 ? 'text-yellow-600' : 'text-orange-600';
+                
+                div.innerHTML = `
+                    <div class="flex items-center space-x-3">
+                        <span class="w-8 h-8 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center text-sm font-bold">${index + 1}</span>
+                        <div>
+                            <div class="font-semibold text-gray-800">${formatTime(segment.start)} - ${formatTime(segment.end)}</div>
+                            <div class="text-xs text-gray-500">时长: ${(segment.end - segment.start).toFixed(1)}s</div>
+                        </div>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-sm font-bold ${qualityColor}">${qualityScore}分</div>
+                        <div class="text-xs text-gray-400">质量评分</div>
+                    </div>
+                `;
+                container.appendChild(div);
+            });
+        }
+
+        // Export using FFmpeg or Fallback
+        async function exportSegments(mode) {
+            if (goodSegments.length === 0) {
+                alert('没有可导出的片段');
+                return;
+            }
+            
+            // Disable buttons
+            document.getElementById('btn-separate').disabled = true;
+            document.getElementById('btn-merge').disabled = true;
+            document.getElementById('export-progress').classList.remove('hidden');
+            document.getElementById('export-results').classList.add('hidden');
+            document.getElementById('download-list').innerHTML = '';
+            
+            try {
+                // Try FFmpeg first if not already failed
+                if (!useFallbackMode && !ffmpeg) {
+                    await initFFmpeg();
+                }
+                
+                if (!useFallbackMode && ffmpeg) {
+                    // Use FFmpeg
+                    await exportWithFFmpeg(mode);
+                } else {
+                    // Use Fallback (MediaRecorder)
+                    await exportWithMediaRecorder(mode);
+                }
+            } catch (error) {
+                console.error('导出错误:', error);
+                alert('导出失败: ' + error.message + '\n\n请尝试刷新页面重试。');
+                document.getElementById('export-progress').classList.add('hidden');
+            } finally {
+                document.getElementById('btn-separate').disabled = false;
+                document.getElementById('btn-merge').disabled = false;
+            }
+        }
+
+        // Export using FFmpeg
+        async function exportWithFFmpeg(mode) {
+            const { fetchFile } = FFmpegUtil;
+            const inputExt = videoFile.name.substring(videoFile.name.lastIndexOf('.'));
+            const inputName = 'input' + inputExt;
+            
+            document.getElementById('export-status').textContent = '正在加载视频...';
+            await ffmpeg.writeFile(inputName, await fetchFile(videoFile));
+            
+            const outputFiles = [];
+            
+            if (mode === 'separate') {
+                for (let i = 0; i < goodSegments.length; i++) {
+                    const segment = goodSegments[i];
+                    const outputName = `segment_${(i+1).toString().padStart(2, '0')}.mp4`;
+                    
+                    document.getElementById('export-status').textContent = `正在导出片段 ${i+1}/${goodSegments.length}...`;
+                    
+                    await ffmpeg.exec([
+                        '-i', inputName,
+                        '-ss', segment.start.toString(),
+                        '-t', (segment.end - segment.start).toString(),
+                        '-c', 'copy',
+                        '-avoid_negative_ts', 'make_zero',
+                        '-y',
+                        outputName
+                    ]);
+                    
+                    const data = await ffmpeg.readFile(outputName);
+                    const blob = new Blob([data.buffer], { type: 'video/mp4' });
+                    const url = URL.createObjectURL(blob);
+                    
+                    outputFiles.push({
+                        name: outputName,
+                        url: url,
+                        size: (blob.size / (1024*1024)).toFixed(2) + ' MB'
+                    });
+                    
+                    await ffmpeg.deleteFile(outputName);
+                }
+            } else {
+                // Merge mode
+                document.getElementById('export-status').textContent = '正在合并片段...';
+                
+                const segmentFiles = [];
+                for (let i = 0; i < goodSegments.length; i++) {
+                    const segment = goodSegments[i];
+                    const tempName = `temp_${i}.mp4`;
+                    
+                    await ffmpeg.exec([
+                        '-i', inputName,
+                        '-ss', segment.start.toString(),
+                        '-t', (segment.end - segment.start).toString(),
+                        '-c', 'copy',
+                        '-avoid_negative_ts', 'make_zero',
+                        '-y',
+                        tempName
+                    ]);
+                    segmentFiles.push(tempName);
+                }
+                
+                // Create concat list
+                let concatContent = '';
+                segmentFiles.forEach(f => {
+                    concatContent += `file '${f}'\n`;
+                });
+                await ffmpeg.writeFile('concat_list.txt', concatContent);
+                
+                await ffmpeg.exec([
+                    '-f', 'concat',
+                    '-safe', '0',
+                    '-i', 'concat_list.txt',
+                    '-c', 'copy',
+                    '-y',
+                    'merged_output.mp4'
+                ]);
+                
+                const data = await ffmpeg.readFile('merged_output.mp4');
+                const blob = new Blob([data.buffer], { type: 'video/mp4' });
+                const url = URL.createObjectURL(blob);
+                
+                outputFiles.push({
+                    name: 'merged_highlights.mp4',
+                    url: url,
+                    size: (blob.size / (1024*1024)).toFixed(2) + ' MB'
+                });
+                
+                // Cleanup
+                for (const f of segmentFiles) await ffmpeg.deleteFile(f);
+                await ffmpeg.deleteFile('concat_list.txt');
+                await ffmpeg.deleteFile('merged_output.mp4');
+            }
+            
+            await ffmpeg.deleteFile(inputName);
+            showExportResults(outputFiles);
+        }
+
+        // Export using MediaRecorder (Fallback)
+        async function exportWithMediaRecorder(mode) {
+            const outputFiles = [];
+            const exportCanvas = document.getElementById('export-canvas');
+            const ctx = exportCanvas.getContext('2d');
+            
+            // Set canvas to video resolution
+            exportCanvas.width = videoElement.videoWidth || 1280;
+            exportCanvas.height = videoElement.videoHeight || 720;
+            
+            if (mode === 'separate') {
+                // Export each segment separately
+                for (let i = 0; i < goodSegments.length; i++) {
+                    const segment = goodSegments[i];
+                    document.getElementById('export-status').textContent = `正在录制片段 ${i+1}/${goodSegments.length}...`;
+                    document.getElementById('export-percent').textContent = '0%';
+                    
+                    const blob = await recordSegment(segment, ctx, exportCanvas);
+                    const url = URL.createObjectURL(blob);
+                    
+                    outputFiles.push({
+                        name: `segment_${(i+1).toString().padStart(2, '0')}.webm`,
+                        url: url,
+                        size: (blob.size / (1024*1024)).toFixed(2) + ' MB'
+                    });
+                }
+            } else {
+                // Merge mode - record all segments sequentially
+                document.getElementById('export-status').textContent = '正在录制合并视频...';
+                
+                const stream = exportCanvas.captureStream(30);
+                const mediaRecorder = new MediaRecorder(stream, {
+                    mimeType: 'video/webm;codecs=vp9',
+                    videoBitsPerSecond: 5000000
+                });
+                
+                const chunks = [];
+                mediaRecorder.ondataavailable = (e) => {
+                    if (e.data.size > 0) chunks.push(e.data);
+                };
+                
+                const recordingPromise = new Promise((resolve) => {
+                    mediaRecorder.onstop = () => {
+                        const blob = new Blob(chunks, { type: 'video/webm' });
+                        resolve(blob);
+                    };
+                });
+                
+                mediaRecorder.start();
+                
+                // Record all segments
+                for (let i = 0; i < goodSegments.length; i++) {
+                    const segment = goodSegments[i];
+                    await playAndRecordSegment(segment, ctx, exportCanvas, i, goodSegments.length);
+                }
+                
+                mediaRecorder.stop();
+                const blob = await recordingPromise;
+                const url = URL.createObjectURL(blob);
+                
+                outputFiles.push({
+                    name: 'merged_highlights.webm',
+                    url: url,
+                    size: (blob.size / (1024*1024)).toFixed(2) + ' MB'
+                });
+            }
+            
+            showExportResults(outputFiles);
+        }
+
+        // Record single segment using MediaRecorder
+        async function recordSegment(segment, ctx, canvas) {
+            const stream = canvas.captureStream(30);
+            const mediaRecorder = new MediaRecorder(stream, {
+                mimeType: 'video/webm;codecs=vp9',
+                videoBitsPerSecond: 5000000
+            });
+            
+            const chunks = [];
+            mediaRecorder.ondataavailable = (e) => {
+                if (e.data.size > 0) chunks.push(e.data);
+            };
+            
+            const recordingPromise = new Promise((resolve) => {
+                mediaRecorder.onstop = () => {
+                    const blob = new Blob(chunks, { type: 'video/webm' });
+                    resolve(blob);
+                };
+            });
+            
+            // Show recording UI
+            document.getElementById('recording-overlay').classList.remove('hidden');
+            document.getElementById('recording-status').textContent = `片段: ${formatTime(segment.start)} - ${formatTime(segment.end)}`;
+            
+            mediaRecorder.start();
+            
+            // Seek to start
+            videoElement.currentTime = segment.start;
+            await new Promise(r => {
+                videoElement.onseeked = r;
+            });
+            
+            videoElement.play();
+            
+            const duration = segment.end - segment.start;
+            const startTime = Date.now();
+            
+            // Update progress
+            const progressInterval = setInterval(() => {
+                const elapsed = (Date.now() - startTime) / 1000;
+                const progress = Math.min(100, (elapsed / duration) * 100);
+                document.getElementById('export-percent').textContent = Math.round(progress) + '%';
+                document.getElementById('export-bar').style.width = progress + '%';
+                document.getElementById('recording-time').textContent = formatTime(elapsed);
+                
+                // Draw frame
+                ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+            }, 1000/30);
+            
+            // Wait for duration
+            await new Promise(r => setTimeout(r, duration * 1000));
+            
+            clearInterval(progressInterval);
+            videoElement.pause();
+            mediaRecorder.stop();
+            
+            document.getElementById('recording-overlay').classList.add('hidden');
+            
+            return await recordingPromise;
+        }
+
+        // Play and record segment for merge mode
+        async function playAndRecordSegment(segment, ctx, canvas, index, total) {
+            videoElement.currentTime = segment.start;
+            await new Promise(r => {
+                videoElement.onseeked = r;
+            });
+            
+            videoElement.play();
+            
+            const duration = segment.end - segment.start;
+            const startTime = Date.now();
+            
+            const drawFrame = () => {
+                ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+            };
+            
+            const interval = setInterval(drawFrame, 1000/30);
+            
+            // Update progress
+            const progressInterval = setInterval(() => {
+                const elapsed = (Date.now() - startTime) / 1000;
+                const totalProgress = ((index * duration + elapsed) / (total * duration)) * 100;
+                document.getElementById('export-percent').textContent = Math.round(totalProgress) + '%';
+                document.getElementById('export-bar').style.width = totalProgress + '%';
+                document.getElementById('export-status').textContent = `正在录制片段 ${index+1}/${total}...`;
+            }, 100);
+            
+            await new Promise(r => setTimeout(r, duration * 1000));
+            
+            clearInterval(interval);
+            clearInterval(progressInterval);
+            videoElement.pause();
+        }
+
+        // Show export results
+        function showExportResults(files) {
+            document.getElementById('export-progress').classList.add('hidden');
+            document.getElementById('export-results').classList.remove('hidden');
+            
+            const downloadList = document.getElementById('download-list');
+            downloadList.innerHTML = '';
+            
+            files.forEach((file) => {
+                const div = document.createElement('div');
+                div.className = 'flex items-center justify-between p-3 bg-green-50 border border-green-200 rounded-lg';
+                div.innerHTML = `
+                    <div class="flex items-center space-x-3">
+                        <svg class="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                                  d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                        <div>
+                            <div class="font-semibold text-gray-800">${file.name}</div>
+                            <div class="text-xs text-gray-500">大小: ${file.size}</div>
+                        </div>
+                    </div>
+                    <a href="${file.url}" download="${file.name}" 
+                       class="px-4 py-2 bg-green-600 text-white text-sm font-semibold rounded-lg hover:bg-green-700 transition flex items-center">
+                        <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                        </svg>
+                        下载
+                    </a>
+                `;
+                downloadList.appendChild(div);
+            });
+            
+            updateStatus('导出完成');
+        }
+
+        // Update threshold displays
+        document.getElementById('stability-threshold').addEventListener('input', (e) => {
+            document.getElementById('stability-value').textContent = e.target.value + '%';
+        });
+        
+        document.getElementById('clarity-threshold').addEventListener('input', (e) => {
+            document.getElementById('clarity-value').textContent = e.target.value + '%';
+        });
+
+        // Video time update
+        document.getElementById('main-video').addEventListener('timeupdate', (e) => {
+            document.getElementById('time-current').textContent = formatTime(e.target.currentTime);
+        });
+
+        // Reset app
+        function resetApp() {
+            location.reload();
+        }
+    </script>
+</body>
+</html>
